@@ -1,0 +1,153 @@
+library(dplyr)
+library(tidyr)
+library(worrms)
+library(obistools)
+library(stringr)
+#install.packages("devtools")
+#devtools::install_github("iobis/obistools")
+library(obistools)
+
+##The data was exported by samples (there are different options on the website: per sample/acquisition/taxon/none)
+
+# find and open directory
+dir <- "C:/Users/Downloads/export_XXXXXXX"
+
+#list all .tsv files and create a new df 
+tsvfiles <- list.files(dir, pattern = "\\.tsv$", full.names = TRUE)
+list <- lapply(tsvfiles, read_tsv)
+df <- bind_rows(list, .id = "origem")
+
+
+## select columns of interest from downloaded data
+#names(mydata)
+mydata <-  df %>%
+  dplyr::select("object_id", 
+                "object_lat", 
+                "object_lon",
+                "object_depth_min",
+                "object_depth", 
+                "object_annotation_category", 
+                "object_annotation_hierarchy",
+                "object_depth")
+
+## Add new fields and rename some columns in order to have the same columns and join both tables
+mydata <- mydata %>% 
+  dplyr::rename(decimalLatitude = "object_lat") %>% 
+  dplyr::rename(decimalLongitude = "object_lon") %>% 
+  dplyr::rename(minimumDepthInMeters = "object_depth_min") %>% 
+  dplyr::rename(maximumDepthInMeters = "object_depth") %>% 
+  dplyr::mutate(rightsHolder= "NA")%>% 
+  dplyr::mutate(rightsAccess= "CC-BY 4.0")%>%
+  dplyr::mutate(institutionCode= "change it")%>%
+  dplyr::mutate(dataSetName= "change it")%>%
+  dplyr::mutate(country= "change it")%>%
+  dplyr::mutate(locationID= "http://marineregions.org/mrgid/8583")%>%
+  dplyr::mutate(coordinateUncertaintyInMeters= "1")
+                             
+#filter only living 
+mydata <- mydata %>%
+  filter(str_detect(mydata$object_annotation_hierarchy, "^living"))
+
+#creating date using the id output from the device (the id= yearmonthdate hourmin...)
+mydata <- mydata %>%
+  mutate(datehour = substr(object_id, 1, 13))
+
+#transforming date to ISO 8601
+mydata$date <- paste0(substr(mydata$datehour, 1, 4), "-", substr(mydata$datehour, 5, 6), "-", substr(mydata$datehour, 7, 8), "T")
+mydata$hour <- paste0(substr(mydata$datehour, 9, 10), ":00")
+mydata$eventDate <- paste0(mydata$date, mydata$hour)
+
+###removing the extra columns
+mydata <- mydata[, !(names(mydata) %in% c("date", "hour", "datahora", "datehour"))]
+
+
+#for this dataset we used 1m bins, so we rounded the depths and filled the next steps (max/min depth) 
+mydata$depth <- floor(mydata$minimumDepthInMeters)
+
+mydata <- mydata %>%
+  dplyr::rename(minimumDepthInMeters = depth) %>%
+  dplyr::mutate(maximumDepthInMeters= mydata$depth)
+    
+##depth always positive
+mydata$maximumDepthInMeters<-mydata$maximumDepthInMeters*-1
+mydata$minimumDepthInMeters<-mydata$minimumDepthInMeters*-1
+
+##Creating the Event df
+
+event <-  mydata %>%
+  dplyr::select(object_id,
+                decimalLatitude,
+                decimalLongitude,
+                maximumDepthInMeters,
+                minimumDepthInMeters,
+                eventDate,
+                rightsHolder,
+                rightsAccess,
+                institutionCode,
+                dataSetName,
+                country,
+                locationID,
+                coordinateUncertaintyInMeters)
+
+View(event)
+#saving .csv
+#write.csv(event, "filename.csv")
+
+
+########## creating occurrence df and matching the scientific names with Worms/obis tools
+
+#OPTION 1 (worrms package -> limit aroung 1500 rows)
+last_taxon <- gsub(".*\\b(\\w+)$", "\\1", mydata$object_annotation_category)
+print(last_taxon)
+
+# Unique list of species
+species_list <- unique(last_taxon)
+print(species_list)
+# Taxon match
+species_matched <- wm_records_taxamatch(species_list)
+species_matched <- do.call(rbind, species_matched)
+
+#OPTION 2 (obis package)
+#--OBIS MATCHING TOOL-------------------------------------------------------------------------------------------
+##removing the general categories such as "others"
+mydata <- mydata %>%
+  filter(!str_detect(object_annotation_category, "other"))
+
+#selecting the last word of the annotations
+last_taxon <- gsub(".*\\b(\\w+)$", "\\1", mydata$object_annotation_category)
+print(last_taxon)
+
+#matching the annotations to the scientific names from worms
+mydata<- mydata %>%
+  mutate(scientificName = match_taxa(last_taxon))
+
+occurrences <-  mydata %>%
+  dplyr::select(object_id,
+                maximumDepthInMeters,
+                minimumDepthInMeters,
+                scientificName)
+
+occurrences <- occurrences %>% 
+  dplyr::mutate(basisOfRecord = "change it") %>% 
+  dplyr::mutate (identificationReferences = "change it")%>%
+  dplyr::mutate (identifiedBy = "change it")%>%
+  dplyr::mutate (identificationVerificationStatus = "change it")%>%
+  dplyr::mutate(coordinateUncertaintyInMeters = "1")%>%
+  dplyr::mutate (occurrenceStatus = "change it")
+
+
+#saving .csv
+#write_csv(occurrences, "filename.csv")
+
+#### Creating Extend MEasurements or Facts df
+emof <- mydata %>%
+  dplyr::select(object_id)%>%
+  dplyr::mutate (measurementType = "change it")%>%
+  dplyr::mutate (measurementTypeID = "change it")%>%
+  dplyr::mutate (measurementValue = "change it")%>%
+  dplyr::mutate (measurementValueID = "change it")%>%
+  dplyr::mutate (measurementUnit = "change it")%>%
+  dplyr::mutate (measurementUnitID = "change it")
+
+#saving .csv
+#write_csv(emof, "filename.csv")
